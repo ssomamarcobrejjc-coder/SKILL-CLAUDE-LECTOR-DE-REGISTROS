@@ -1,0 +1,462 @@
+INSTRUCCIONES PARA ACTUALIZAR EL ARTEFACTO "Registro manuscrito → Fuerza laboral"
+=================================================================================
+
+Claude: aplica estos cambios al código del artefacto que tenemos abierto en este chat.
+Reglas:
+- Haz SOLO estos cambios. No reescribas ni "mejores" otras partes.
+- Conserva los ajustes propios de este artefacto (por ejemplo el valor de PARTES_EN_PARALELO,
+  el modelo, textos o mensajes que hayamos cambiado aquí).
+- Donde se indica "reemplaza la función completa", sustituye toda la función actual por la de abajo.
+- Si un nombre del código actual difiere un poco (por ejemplo una función renombrada), aplica el
+  cambio sobre la parte equivalente.
+- Si algún cambio ya está aplicado, déjalo como está.
+- Al terminar, dime qué cambios aplicaste y si alguno no pudo aplicarse.
+
+QUÉ RESUELVEN
+1. Cuando "falla la conexión con Claude" (envío demasiado pesado), la app divide el PDF en partes
+   más chicas y reintenta, en vez de terminar con 0 filas. El error muestra el detalle técnico.
+2. Segunda lectura de filas dudosas (NO ENCONTRADO, REVISAR o similitud moderada): se vuelve a
+   enviar el documento con los candidatos más parecidos de la fuerza laboral para que el modelo
+   elija uno o diga que ninguno. Solo puede elegir personas que existen en el maestro.
+3. Se leen TODAS las hojas cuyo nombre contenga DATA, BAJA o VISITA (antes solo la primera de cada tipo).
+
+
+---------------------------------------------------------------------------------
+CAMBIO 1 — Reemplaza la función completa `llamarApi` (y su comentario) por esta:
+---------------------------------------------------------------------------------
+// reintenta con espera creciente ante saturación (429/529), errores 5xx, cortes de red y tiempos de espera
+async function llamarApi(body, signal) {
+  let ultimo = null;
+  for (let intento = 0; intento < REINTENTOS; intento++) {
+    if (signal?.aborted) throw new DOMException("Cancelado", "AbortError");
+    const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort();
+    signal?.addEventListener("abort", onAbort);
+    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+      let data = null;
+      try { data = await res.json(); } catch { data = null; }
+      if (res.ok && data && !data.error) return data;
+      const msg = data?.error?.message || `Error HTTP ${res.status}`;
+      ultimo = new ApiError(msg, res.status, res.status === 429 || res.status >= 500 || res.status === 0);
+    } catch (e) {
+      if (signal?.aborted) throw new DOMException("Cancelado", "AbortError");
+      ultimo = new ApiError(
+        e.name === "AbortError" ? "Tiempo de espera agotado" : `Falló la conexión con Claude (${e.message || "error de red"})`,
+        0,
+        true
+      );
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    }
+    if (!ultimo.reintentable || intento === REINTENTOS - 1) break;
+    // ante cortes de conexión se reintenta una sola vez: si persiste, quien llama prueba con partes más chicas
+    if (ultimo.status === 0 && intento >= 1) break;
+    await esperar(Math.min(30000, 2000 * 2 ** intento) + Math.random() * 500, signal);
+  }
+  throw ultimo;
+}
+
+Nota: si el catch actual tiene un mensaje propio (p. ej. "Falló la conexión con Claude. Vuelve a
+procesar en un momento."), puedes mantener ese texto, pero el error de red debe crearse con
+status 0 (new ApiError(mensaje, 0, true)), porque el CAMBIO 2 depende de eso.
+
+
+---------------------------------------------------------------------------------
+CAMBIO 2 — Reemplaza `esMuyGrande` y la función completa `procesarTrabajo` por esto:
+(lo importante: las filas guardan `_job`, y un fallo de red divide el trabajo en partes)
+---------------------------------------------------------------------------------
+const esMuyGrande = (e) =>
+  e instanceof DemasiadoGrande || e.status === 413 || /too large|exceed|maximum|demasiado/i.test(e.message || "");
+
+// lee una parte; si es muy pesada o la respuesta se corta, la divide en dos y lee cada mitad
+async function procesarTrabajo(job, signal, addLog) {
+  try {
+    const datos = await job.obtenerDatos();
+    const r = await ocrParte(datos, job.contexto, signal);
+    if (r.truncated && job.dividir) {
+      addLog(`${job.etiqueta}: la respuesta se cortó, se vuelve a leer en dos mitades…`);
+      return combinar(await Promise.all((await job.dividir()).map((s) => procesarTrabajo(s, signal, addLog))));
+    }
+    return {
+      rows: r.rows.map((x) => ({ ...x, _job: job })),
+      avisos: r.truncated ? [`${job.etiqueta}: la respuesta se cortó; puede faltar la última fila.`] : [],
+      errores: [],
+    };
+  } catch (e) {
+    if (e.name === "AbortError") throw e;
+    // un corte de conexión que se repite en cada reintento suele deberse a un envío demasiado pesado
+    // (el entorno de los artefactos acepta menos que la API): se prueba con partes más chicas
+    const fallaRed = e instanceof ApiError && e.status === 0;
+    if ((esMuyGrande(e) || fallaRed) && job.dividir) {
+      addLog(`${job.etiqueta}: ${fallaRed ? "falló la conexión" : "muy pesado para un solo envío"}; se reintenta en dos partes más pequeñas…`);
+      return combinar(await Promise.all((await job.dividir()).map((s) => procesarTrabajo(s, signal, addLog))));
+    }
+    const detalle = e instanceof ApiError && e.status ? ` (HTTP ${e.status})` : "";
+    const sugerencia =
+      esMuyGrande(e) || fallaRed
+        ? " Si se repite, el archivo puede ser muy pesado: escanéalo a menor resolución (150–200 ppp) o en blanco y negro."
+        : "";
+    return { rows: [], avisos: [], errores: [`${job.etiqueta}: ${e.message}${detalle}.${sugerencia}`] };
+  }
+}
+
+
+---------------------------------------------------------------------------------
+CAMBIO 3 — Reemplaza la función completa `leerFuerzaLaboral` (y su comentario) por esta:
+---------------------------------------------------------------------------------
+// Lee solo las hojas DATA / BAJA / VISITA. Primero se leen únicamente los nombres de hoja (rápido)
+// y después solo esas hojas, sin estilos ni fórmulas: en archivos pesados es varias veces más rápido.
+export function leerFuerzaLaboral(data) {
+  const nombres = XLSX.read(data, { type: "array", bookSheets: true }).SheetNames;
+  const up = (n) => stripAccents(n.toUpperCase());
+  // se leen TODAS las hojas cuyo nombre contenga DATA, BAJA o VISITA (p. ej. "DATA" y "DATA SUBCONTRATAS")
+  const plan = nombres
+    .map((n) => [n, up(n).includes("BAJA") ? "BAJA" : up(n).includes("VISITA") ? "VISITA" : up(n).includes("DATA") ? "ACTIVO" : null])
+    .filter(([, estado]) => estado);
+  if (plan.length === 0) return { master: [], sheetsFound: [], conteo: [], hojasDisponibles: nombres };
+
+  const wb = XLSX.read(data, {
+    type: "array",
+    sheets: plan.map(([n]) => n),
+    cellDates: true,
+    cellFormula: false,
+    cellHTML: false,
+    cellNF: false,
+    cellStyles: false,
+    cellText: false,
+  });
+  let master = [];
+  const conteo = [];
+  for (const [hoja, estado] of plan) {
+    const rows = wb.Sheets[hoja] ? parseSheet(wb.Sheets[hoja], estado) : [];
+    master = master.concat(rows);
+    conteo.push(`${hoja} (${rows.length})`);
+  }
+  return { master, sheetsFound: plan.map(([n]) => n), conteo, hojasDisponibles: nombres };
+}
+
+
+---------------------------------------------------------------------------------
+CAMBIO 4 — Reemplaza la función completa `matchAgainstMaster` por el bloque de abajo.
+El bloque también define, ANTES de ella, `notaEstado` y `filaDesdeMaestro` (que antes estaban
+dentro de matchAgainstMaster como `notaEstado` y `desdeMaestro`), y DESPUÉS de ella las funciones
+nuevas `candidatosPara` y `aFila`. Si `notaEstado` ya existía fuera, no la dupliques.
+---------------------------------------------------------------------------------
+const notaEstado = (m) =>
+  m.estado === "BAJA" ? "Figura como Dado de Baja, no como personal activo." : m.estado === "VISITA" ? "Figura en hoja VISITA." : "";
+
+function filaDesdeMaestro(m, estado, obs, dudoso = false) {
+  return {
+    dni: m.dni, // copiado literal del maestro
+    nombre: m.nombre, // copiado literal del maestro
+    cargo: m.cargo || "",
+    fechaIngreso: m.fechaIngreso || "",
+    fechaNacimiento: m.fechaNacimiento || "",
+    celular: m.celular || "",
+    frente: m.frente || "",
+    estado,
+    obs: obs.filter(Boolean).join(" "),
+    dudoso,
+  };
+}
+
+export function matchAgainstMaster(extracted, indice) {
+  const dniLeido = onlyDigitsAlnum(cleanDni(extracted.dni));
+  const q = prepName(extracted.nombre);
+  const cargoLeidoExp = expandCargo(extracted.cargo);
+  const leido = `en el registro se leyó "${extracted.dni}" / "${extracted.nombre}"`;
+
+  // 1) DNI exacto: búsqueda directa en el índice (también con los ceros iniciales que Excel o la lectura pudieron perder)
+  if (dniLeido.length >= 6) {
+    const hits =
+      indice.byDni.get(dniLeido) ||
+      indice.byDni.get(onlyDigitsAlnum(extracted.dni)) || // con prefijo, p. ej. un CE escrito "CE00123456"
+      (/^\d{5,7}$/.test(dniLeido) ? indice.byDni.get(dniLeido.padStart(8, "0")) : null);
+    if (hits) {
+      const m = hits.reduce((a, b) => (prioridad(b) < prioridad(a) ? b : a));
+      const nombreSim = nameScore(q, m._name);
+      const nombreDistinto = q.n && nombreSim < 0.5;
+      return filaDesdeMaestro(m, nombreDistinto ? "REVISAR" : "OK", [
+        nombreDistinto
+          ? `El DNI coincide, pero el nombre leído ("${extracted.nombre}") es distinto al del maestro (${Math.round(nombreSim * 100)}%); verificar.`
+          : "",
+        notaEstado(m),
+      ], nombreDistinto);
+    }
+  }
+
+  // 2) búsqueda por similitud. Si el registro trae cargo, primero se busca solo entre quienes tienen ese cargo
+  //    (sobre todas las hojas a la vez); si ahí no hay una coincidencia clara, se busca en toda la fuerza laboral.
+  const semillas = q.tokens.flatMap((t) => indice.byToken.get(t) || []);
+  let res = null;
+  let filtradoPorCargo = false;
+  let cargoNoCoincide = false;
+  const porCargo = cargoLeidoExp ? indice.byCargo.get(cargoLeidoExp) : null;
+  if (porCargo) {
+    res = buscarMejor(q, dniLeido, porCargo, semillas, (m) => m._cargo === cargoLeidoExp);
+    filtradoPorCargo = true;
+  }
+  if (!res || res.score < UMBRAL_DEBIL) {
+    const global = buscarMejor(q, dniLeido, indice.entradas, semillas, null);
+    if (global && (!res || global.score > res.score)) {
+      cargoNoCoincide = filtradoPorCargo && global.score > UMBRAL;
+      res = global;
+      filtradoPorCargo = false;
+    }
+  }
+
+  // Una coincidencia solo por parecido de DNI (2 o más dígitos distintos) con un nombre que no se parece
+  // suele ser otra persona: con miles de trabajadores, que 5 de 8 dígitos coincidan pasa por azar.
+  let soloDniDebil = false;
+  if (res && res.score > UMBRAL && dniLeido && q.n) {
+    const d = docScore(dniLeido, res.best.dni);
+    const n = nameScore(q, res.best._name);
+    soloDniDebil = d >= n && d < UMBRAL_DEBIL && n < 0.4;
+  }
+
+  if (res && res.score > UMBRAL && !soloDniDebil) {
+    const m = res.best;
+    // puntajes exactos (sin descarte) para el informe
+    const d = dniLeido && m.dni ? docScore(dniLeido, m.dni) : 0;
+    const n = nameScore(q, m._name);
+    // OK solo si lo leído coincide tal cual; si se corrigió el DNI o el nombre, queda como CORREGIDO
+    const isExact = res.score === 1 && (!dniLeido || d === 1) && (!q.n || n === 1);
+    return filaDesdeMaestro(m, isExact ? "OK" : "CORREGIDO", [
+      !isExact && d === 1
+        ? `DNI exacto; el nombre se tomó del maestro (${leido}).`
+        : !isExact
+        ? `Coincidencia por ${d >= n ? "documento" : "nombre"} (${Math.round(res.score * 100)}% — DNI:${Math.round(d * 100)}%, Nombre:${Math.round(n * 100)}%); datos tomados del maestro (${leido}).`
+        : "",
+      filtradoPorCargo ? `Búsqueda acotada por cargo/puesto ("${extracted.cargo}").` : "",
+      cargoNoCoincide ? `El cargo leído ("${extracted.cargo}") no coincide con el del maestro ("${m.cargo}").` : "",
+      res.score < UMBRAL_DEBIL ? "Similitud moderada, verificar manualmente." : "",
+      notaEstado(m),
+    ], res.score < UMBRAL_DEBIL);
+  }
+
+  // sin similitud suficiente: se deja lo leído y, si hay algo cercano, se sugiere para revisión manual
+  const sugerencia = soloDniDebil
+    ? ` El DNI se parece al de ${res.best.nombre} (${res.best.dni}, ${Math.round(res.score * 100)}%), pero el nombre no coincide; verificar manualmente.`
+    : res && res.score >= 0.4 ? ` Lo más parecido: ${res.best.nombre} (${res.best.dni || "sin doc"}) con ${Math.round(res.score * 100)}%.` : "";
+  return {
+    dni: extracted.dni,
+    nombre: extracted.nombre,
+    cargo: extracted.cargo || "",
+    fechaIngreso: "",
+    fechaNacimiento: "",
+    celular: "",
+    frente: "",
+    estado: "NO ENCONTRADO",
+    obs: "No se encontró en la fuerza laboral (ni por documento ni por nombre con más de 60% de similitud). Se dejó el dato tal como se leyó." + sugerencia,
+    dudoso: true,
+  };
+}
+
+// los candidatos más parecidos de la fuerza laboral (por nombre y por DNI), para la segunda lectura
+export function candidatosPara(extracted, indice, kNombre = 4, kDoc = 3) {
+  const dni = onlyDigitsAlnum(cleanDni(extracted.dni));
+  const q = prepName(extracted.nombre);
+  const topN = [], topD = [];
+  const meter = (arr, k, item) => {
+    if (arr.length >= k && item.s <= arr[arr.length - 1].s) return;
+    arr.push(item);
+    arr.sort((a, b) => b.s - a.s);
+    if (arr.length > k) arr.pop();
+  };
+  for (const m of indice.entradas) {
+    if (q.n) {
+      const piso = topN.length < kNombre ? 0.3 : topN[topN.length - 1].s;
+      const sN = nameScore(q, m._name, piso);
+      if (sN >= 0.3) meter(topN, kNombre, { m, s: sN });
+    }
+    if (dni.length >= 6 && m.dni) {
+      const sD = docScore(dni, m.dni);
+      if (sD >= 0.6) meter(topD, kDoc, { m, s: sD });
+    }
+  }
+  const vistos = new Set();
+  return [...topN, ...topD].map((x) => x.m).filter((m) => !vistos.has(m._i) && vistos.add(m._i));
+}
+
+// convierte el resultado del cruce en la fila que se muestra y se copia a Excel
+function aFila(r, e) {
+  return {
+    dni: cleanDni(r.dni),
+    nombre: r.nombre || "",
+    cargo: r.cargo || "",
+    fechaIngreso: r.fechaIngreso || "",
+    fechaNacimiento: r.fechaNacimiento || "",
+    celular: r.celular || "",
+    frente: r.frente || "",
+    status: r.estado,
+    obs: r.obs || "",
+    dudoso: !!r.dudoso,
+    raw: { nombre: e.nombre, dni: e.dni, cargo: e.cargo || "" },
+  };
+}
+
+
+---------------------------------------------------------------------------------
+CAMBIO 5 — Agrega este bloque nuevo justo ANTES de la función `combinar(resultados)`:
+---------------------------------------------------------------------------------
+/* ---------- segunda lectura de filas dudosas ---------- */
+
+function promptVerificacion(items) {
+  const lista = items
+    .map((it) => {
+      const cands = it.candidatos
+        .map((m, j) => `   ${j + 1}) DNI ${m.dni || "(sin doc)"} · ${m.nombre}${m.cargo ? ` · ${m.cargo}` : ""}`)
+        .join("\n");
+      return `[F${it.id}] se leyó: DNI "${it.e.dni}" / nombre "${it.e.nombre}"${it.e.cargo ? ` / cargo "${it.e.cargo}"` : ""}\n${cands || "   (sin candidatos parecidos)"}`;
+    })
+    .join("\n\n");
+  return `Te adjunto otra vez el registro de asistencia manuscrito. Algunas filas que se leyeron de él no se pudieron cruzar con seguridad contra la fuerza laboral.
+
+Para cada fila de la lista: ubícala en la tabla de asistentes del documento, vuelve a leer con cuidado el DNI (dígito por dígito) y el nombre tal como están escritos, y compáralos con los candidatos de la fuerza laboral que aparecen debajo de la fila.
+
+Elige un candidato SOLO si lo escrito en el documento respalda que es la misma persona (el DNI coincide o casi coincide, y/o los apellidos y nombres corresponden aunque la letra sea difícil). No elijas un candidato solo porque es el más parecido de la lista. Si ninguno corresponde, responde NINGUNO.
+
+Responde en TEXTO PLANO, una línea por fila, con 4 campos separados por TABULADOR, sin encabezado ni texto adicional:
+ID<TAB>OPCION<TAB>DNI_RELEIDO<TAB>NOMBRE_RELEIDO
+donde ID es el código de la fila (por ejemplo F3), OPCION es el número del candidato elegido o NINGUNO, y DNI_RELEIDO / NOMBRE_RELEIDO son tu nueva lectura literal del documento.
+
+Filas a revisar:
+
+${lista}`;
+}
+
+export function parsearVerificacion(text) {
+  const out = new Map();
+  for (const line of text.split("\n")) {
+    const c = line.split("\t").map((x) => x.trim());
+    const id = /^\[?F(\d+)\]?$/i.exec(c[0] || "");
+    if (!id || c.length < 2) continue;
+    const opcion = /^\d+$/.test(c[1]) ? Number(c[1]) : null;
+    out.set(Number(id[1]), { opcion, dni: c[2] || "", nombre: c[3] || "" });
+  }
+  return out;
+}
+
+async function verificarFilas(job, items, signal) {
+  const datos = await job.obtenerDatos();
+  const fileBlock =
+    datos.mediaType === "application/pdf"
+      ? { type: "document", source: { type: "base64", media_type: datos.mediaType, data: datos.base64 } }
+      : { type: "image", source: { type: "base64", media_type: datos.mediaType, data: datos.base64 } };
+  const data = await llamarApi(
+    {
+      model: MODELO,
+      max_tokens: MAX_TOKENS_RESPUESTA,
+      temperature: 0,
+      messages: [{ role: "user", content: [fileBlock, { type: "text", text: promptVerificacion(items) }] }],
+    },
+    signal
+  );
+  const text = (data.content || []).map((b) => (b.type === "text" ? b.text || "" : "")).join("\n");
+  return parsearVerificacion(text);
+}
+
+// aplica la respuesta de la segunda lectura a una fila dudosa; nunca inventa: solo acepta personas del maestro
+export function aplicarVerificacion(fila, it, v, indice) {
+  const nota = (t) => (fila.obs ? `${fila.obs} ${t}` : t);
+  if (!v) return { ...fila, obs: nota("La segunda lectura no devolvió respuesta para esta fila.") };
+  if (v.opcion && it.candidatos[v.opcion - 1]) {
+    const m = it.candidatos[v.opcion - 1];
+    return aFila(
+      filaDesdeMaestro(m, "CORREGIDO", [
+        `Confirmado en segunda lectura del documento (se releyó "${v.dni}" / "${v.nombre}"; en la primera lectura: "${it.e.dni}" / "${it.e.nombre}").`,
+        notaEstado(m),
+      ]),
+      it.e
+    );
+  }
+  // ninguno de los candidatos: se vuelve a cruzar con la nueva lectura, por si el DNI o el nombre se leyeron mal la primera vez
+  const cambio = onlyDigitsAlnum(v.dni) !== onlyDigitsAlnum(it.e.dni) || normName(v.nombre) !== normName(it.e.nombre);
+  if (cambio && (v.dni || v.nombre)) {
+    const r2 = matchAgainstMaster({ dni: v.dni, nombre: v.nombre, cargo: it.e.cargo }, indice);
+    if (r2.estado !== "NO ENCONTRADO" && !r2.dudoso) {
+      return aFila({ ...r2, estado: "CORREGIDO", obs: `Encontrado con la segunda lectura del documento ("${v.dni}" / "${v.nombre}"). ${r2.obs}`.trim() }, it.e);
+    }
+  }
+  if (fila.status === "NO ENCONTRADO") {
+    return {
+      ...fila,
+      dni: cleanDni(v.dni || fila.dni),
+      nombre: v.nombre || fila.nombre,
+      obs: `Revisado dos veces contra el documento: ninguna persona de la fuerza laboral corresponde. Probablemente no está registrado en el maestro (alta reciente o en otra hoja); verificar.${
+        cambio ? ` Segunda lectura: "${v.dni}" / "${v.nombre}".` : ""
+      }`,
+    };
+  }
+  return { ...fila, obs: nota("La segunda lectura no confirmó ningún candidato; verificar manualmente.") };
+}
+
+
+---------------------------------------------------------------------------------
+CAMBIO 6 — Dentro del componente App:
+---------------------------------------------------------------------------------
+6a) Junto a `const [detail, setDetail] = useState(false);` agrega:
+
+  const [segundaLectura, setSegundaLectura] = useState(true);
+
+6b) En la función `procesar`, reemplaza el bucle que arma `matched` (desde `const matched = [];`
+    hasta la línea `marcarDuplicados(matched);`, inclusive) por esto:
+
+      let matched = [];
+      for (let i = 0; i < extracted.length; i++) {
+        matched.push(aFila(matchAgainstMaster(extracted[i], indice), extracted[i]));
+        if (i % 25 === 24) await tick(); // mantiene la página respondiendo con registros largos
+      }
+
+      // segunda lectura: las filas dudosas se vuelven a revisar contra el documento original,
+      // mostrándole al modelo los candidatos reales de la fuerza laboral para que elija (o diga que ninguno)
+      const dudosas = matched.map((f, i) => i).filter((i) => matched[i].dudoso && extracted[i]._job);
+      if (segundaLectura && dudosas.length) {
+        addLog(`Segunda lectura de ${dudosas.length} fila(s) dudosa(s) contra el documento…`);
+        const porParte = new Map();
+        for (const i of dudosas) {
+          const it = { id: i + 1, idx: i, e: extracted[i], candidatos: candidatosPara(extracted[i], indice) };
+          const l = porParte.get(extracted[i]._job);
+          if (l) l.push(it); else porParte.set(extracted[i]._job, [it]);
+          await tick();
+        }
+        const tareas = [];
+        for (const [job, items] of porParte) for (let k = 0; k < items.length; k += 25) tareas.push([job, items.slice(k, k + 25)]);
+        let resueltas = 0;
+        await enParalelo(tareas, PARTES_EN_PARALELO, async ([job, items]) => {
+          let resp = null;
+          try {
+            resp = await verificarFilas(job, items, ctrl.signal);
+          } catch (e) {
+            if (e.name === "AbortError") throw e;
+            addLog(`⚠ ${job.etiqueta}: no se pudo hacer la segunda lectura (${e.message}).`);
+            return;
+          }
+          for (const it of items) {
+            const nueva = aplicarVerificacion(matched[it.idx], it, resp.get(it.id), indice);
+            if (nueva.status !== matched[it.idx].status) resueltas++;
+            matched[it.idx] = nueva;
+          }
+        });
+        addLog(`Segunda lectura completada: ${resueltas} fila(s) resuelta(s).`);
+      }
+      marcarDuplicados(matched);
+
+6c) Justo ANTES del botón "Procesar registro" (el comentario {/* action */}), agrega esta casilla:
+
+        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12.5px", color: COLORS.text, cursor: "pointer", marginBottom: "12px" }}>
+          <input type="checkbox" checked={segundaLectura} onChange={(e) => setSegundaLectura(e.target.checked)} disabled={busy} />
+          Segunda lectura de filas dudosas
+          <span style={{ color: COLORS.dim }}>— vuelve a revisar el documento con los candidatos de la fuerza laboral (más preciso, tarda un poco más)</span>
+        </label>
+
+
+FIN DE LOS CAMBIOS.
