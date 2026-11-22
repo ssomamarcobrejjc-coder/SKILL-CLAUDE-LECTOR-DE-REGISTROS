@@ -30,6 +30,8 @@ SSOMA/01. Capacitaciones/1. AUTOMATIZACIONES/REPORTE DIARIO/
 
 ## Pasos para crear el flujo
 
+> En las carpetas, usa el ícono de carpeta para elegirlas en lugar de escribir la ruta. Así Power Automate pone el formato correcto.
+
 En Power Automate: **Crear → Flujo de nube automatizado**. Nombre: `Reporte diario - borrador Outlook`.
 
 ### 1. Desencadenador: SharePoint → "Cuando se crea un archivo (solo propiedades)"
@@ -86,7 +88,7 @@ Dentro:
 
 ### 4. Guardar y probar
 1. Guarda el flujo.
-2. Copia `CONFIG/PRUEBA_LOTE_REPORTE_20261122.json` a `ENTRADA` y renómbralo `LOTE_REPORTE_20261122.json`.
+2. Avísale a Claude para que suba a `ENTRADA` el lote de prueba del 22/11/2026.
 3. En 1 a 5 minutos deberías tener el borrador en Outlook, el Excel en `REPORTES` y el JSON en `PROCESADOS`.
 
 ## Errores comunes
