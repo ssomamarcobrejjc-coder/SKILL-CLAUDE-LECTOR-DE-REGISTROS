@@ -1,0 +1,12 @@
+{
+  "asunto": "Reporte diario de actividades – {fecha}",
+  "saludo_inicio": "Estimados",
+  "despedida": "Saludos;",
+  "para": [
+    {"alias": "Nombre1", "nombre": "Nombre Apellido", "correo": "persona1@empresa.com"},
+    {"alias": "Nombre2", "nombre": "Nombre Apellido", "correo": "persona2@empresa.com"}
+  ],
+  "cc": [
+    {"nombre": "Nombre Apellido", "correo": "persona3@empresa.com"}
+  ]
+}
