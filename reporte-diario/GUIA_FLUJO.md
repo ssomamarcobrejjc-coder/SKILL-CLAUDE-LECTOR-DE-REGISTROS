@@ -1,18 +1,18 @@
 # Flujo de Power Automate: "Reporte diario → borrador Outlook"
 
-Crea un **borrador** en Outlook con el reporte diario (tabla con líneas y colores y el Excel adjunto) cada vez que aparece un `LOTE_REPORTE_*.json` en la carpeta ENTRADA. Archiva el Excel y mueve el JSON. Es independiente de los flujos de `ENTRADA`, `ENTRADA_DOCS` y `ENTRADA_VCC`.
+Crea un **borrador** en Outlook con el reporte diario cada vez que aparece un `LOTE_REPORTE_*.json` en la carpeta ENTRADA. El borrador lleva la tabla con líneas y colores y el Excel adjunto. Además, el flujo archiva el Excel y mueve el JSON. Es independiente de los demás flujos de automatización.
 
-## Carpetas (OneDrive de One Marcobre)
+## Carpetas (tu OneDrive - JJC)
 
-Sitio: `https://perujjc-my.sharepoint.com/personal/onemarcobre_jjc_com_pe`, biblioteca **Documentos**.
+En la PC: `C:\Users\joseph.flores\OneDrive - JJC\Escritorio\REPOS\REPORTE DIARIO`
 
 ```
-SSOMA/01. Capacitaciones/1. AUTOMATIZACIONES/REPORTE DIARIO/
+Escritorio/REPOS/REPORTE DIARIO/
 ├── ENTRADA      ← Claude deja aquí LOTE_REPORTE_AAAAMMDD.json
 ├── PROCESADOS   ← el flujo mueve aquí el JSON procesado
 ├── ERRORES      ← el flujo mueve aquí el JSON si algo falla
 ├── REPORTES     ← el flujo guarda aquí el Excel del día
-└── CONFIG       ← destinatarios.json, script y esta guía
+└── CONFIG       ← destinatarios.json y esta guía
 ```
 
 ## Qué trae el lote
@@ -26,77 +26,70 @@ SSOMA/01. Capacitaciones/1. AUTOMATIZACIONES/REPORTE DIARIO/
 }
 ```
 
-`mensaje` ya trae el asunto, Para, CC, el cuerpo HTML con formato y el Excel adjunto. El flujo solo lo pasa a Outlook sin tocarlo.
+`mensaje` ya trae el asunto, Para, CC, el cuerpo HTML con el formato de tu reporte y el Excel adjunto. El flujo lo pasa a Outlook sin tocarlo.
 
 ## Pasos para crear el flujo
 
-> En las carpetas, usa el ícono de carpeta para elegirlas en lugar de escribir la ruta. Así Power Automate pone el formato correcto.
-
 En Power Automate: **Crear → Flujo de nube automatizado**. Nombre: `Reporte diario - borrador Outlook`.
 
-### 1. Desencadenador: SharePoint → "Cuando se crea un archivo (solo propiedades)"
-- **Dirección del sitio:** `https://perujjc-my.sharepoint.com/personal/onemarcobre_jjc_com_pe` (si no aparece en la lista, elige "Escribir valor personalizado").
-- **Nombre de la biblioteca:** `Documentos`.
-- **Carpeta:** `/Documents/SSOMA/01. Capacitaciones/1. AUTOMATIZACIONES/REPORTE DIARIO/ENTRADA`.
-- **Configuración (⋯ → Configuración) → Condiciones del desencadenador → + Agregar**, para que solo se active con los lotes:
+> En cada campo de carpeta, usa el ícono de carpeta para elegirla en lugar de escribir la ruta.
+
+### 1. Desencadenador: OneDrive para la Empresa → "Cuando se crea un archivo"
+- **Carpeta:** `/Escritorio/REPOS/REPORTE DIARIO/ENTRADA`
+- **Incluir subcarpetas:** No.
+- **⋯ → Configuración → Condiciones del desencadenador → + Agregar**, para que solo se active con los lotes:
   ```
-  @startsWith(triggerOutputs()?['body/{FilenameWithExtension}'], 'LOTE_REPORTE_')
+  @startsWith(triggerOutputs()?['headers/x-ms-file-name'], 'LOTE_REPORTE_')
   ```
 
 ### 2. Ámbito "Intentar"
-Agrega un control **Ámbito** llamado `Intentar` y dentro pon los pasos 2.1 a 2.5.
+Agrega un control **Ámbito** llamado `Intentar` y pon dentro los pasos 2.1 a 2.4.
 
-**2.1 SharePoint → "Obtener contenido de archivo"**
-- Dirección del sitio y biblioteca: los mismos del desencadenador.
-- **Identificador de archivo:** contenido dinámico **Identificador** del desencadenador.
-
-**2.2 Componer** (renómbralo `Lote`). En **Entradas**, pega esta expresión:
+**2.1 Componer** (renómbralo `Lote`). En **Entradas**, pega esta expresión:
 ```
-json(base64ToString(body('Obtener_contenido_de_archivo')?['$content']))
+json(base64ToString(triggerBody()?['$content']))
 ```
-> Si falla con "The template language function 'base64ToString'…", cambia la expresión por `json(body('Obtener_contenido_de_archivo'))`.
+> Si da error, usa `json(triggerBody())`.
 
-**2.3 Office 365 Outlook → "Enviar una solicitud HTTP"** (renómbralo `Crear borrador`)
+**2.2 Office 365 Outlook → "Enviar una solicitud HTTP"** (renómbralo `Crear borrador`)
 - **URI:** `https://graph.microsoft.com/v1.0/me/messages`
 - **Método:** `POST`
 - **Cuerpo:** la expresión `outputs('Lote')?['mensaje']`
 - **Tipo de contenido:** `application/json`
 
-Esto **solo crea el borrador** en tu carpeta Borradores, no lo envía.
+Este paso **solo crea el borrador** en tu carpeta Borradores; no lo envía.
 
-**2.4 SharePoint → "Crear archivo"** (guarda el Excel)
-- **Ruta de acceso de la carpeta:** `/Documents/SSOMA/01. Capacitaciones/1. AUTOMATIZACIONES/REPORTE DIARIO/REPORTES`
+**2.3 OneDrive para la Empresa → "Crear archivo"** (guarda el Excel)
+- **Ruta de acceso de la carpeta:** `/Escritorio/REPOS/REPORTE DIARIO/REPORTES`
 - **Nombre de archivo:** la expresión `outputs('Lote')?['archivo_excel']`
 - **Contenido del archivo:** la expresión `base64ToBinary(outputs('Lote')?['mensaje']?['attachments']?[0]?['contentBytes'])`
 
-> Si ese día ya hay un Excel con el mismo nombre, el paso falla. Para que lo reemplace, usa "Actualizar archivo" o borra el anterior.
-
-**2.5 SharePoint → "Mover archivo"**
-- **Archivo para mover:** **Identificador** del desencadenador.
-- **Carpeta de destino:** `/Documents/SSOMA/01. Capacitaciones/1. AUTOMATIZACIONES/REPORTE DIARIO/PROCESADOS`
-- **Si ya hay otro archivo:** `Reemplazar`.
+**2.4 OneDrive para la Empresa → "Mover o cambiar el nombre de un archivo"**
+- **Archivo:** la expresión `triggerOutputs()?['headers/x-ms-file-id']`
+- **Ruta de acceso de destino:** `/Escritorio/REPOS/REPORTE DIARIO/PROCESADOS/@{triggerOutputs()?['headers/x-ms-file-name']}`
+- **Sobrescribir:** Sí.
 
 ### 3. Ámbito "Si falla"
-Agrega otro **Ámbito** debajo de `Intentar`, llamado `Si falla`. Abre **⋯ → Configurar ejecución posterior** y marca solo **ha fallado** y **ha agotado el tiempo de espera**.
+Agrega otro **Ámbito** debajo de `Intentar`, llamado `Si falla`. Entra a **⋯ → Configurar ejecución posterior** y marca solo **ha fallado** y **ha agotado el tiempo de espera**.
 
 Dentro:
-1. **SharePoint → Mover archivo:** el **Identificador** del desencadenador a `.../REPORTE DIARIO/ERRORES` (Si ya hay otro archivo: Reemplazar).
-2. **Office 365 Outlook → Enviar un correo electrónico (V2):**
+1. **OneDrive para la Empresa → Mover o cambiar el nombre de un archivo**: el mismo archivo, con destino `/Escritorio/REPOS/REPORTE DIARIO/ERRORES/@{triggerOutputs()?['headers/x-ms-file-name']}` y Sobrescribir: Sí.
+2. **Office 365 Outlook → Enviar un correo electrónico (V2)**:
    - **Para:** tu correo.
-   - **Asunto:** `Reporte diario: no se pudo crear el borrador`.
-   - **Cuerpo:** `El lote @{triggerOutputs()?['body/{FilenameWithExtension}']} pasó a ERRORES. Revisa el historial del flujo.`
+   - **Asunto:** `Reporte diario: no se pudo crear el borrador`
+   - **Cuerpo:** `El lote @{triggerOutputs()?['headers/x-ms-file-name']} pasó a ERRORES. Revisa el historial del flujo.`
 
 ### 4. Guardar y probar
 1. Guarda el flujo.
-2. Avísale a Claude para que suba a `ENTRADA` el lote de prueba del 22/11/2026.
-3. En 1 a 5 minutos deberías tener el borrador en Outlook, el Excel en `REPORTES` y el JSON en `PROCESADOS`.
+2. Pídele a Claude que suba a `ENTRADA` el lote de prueba del 22/11/2026.
+3. En unos minutos deberías tener el borrador en Outlook, el Excel en `REPORTES` y el JSON en `PROCESADOS`.
 
 ## Errores comunes
 
 | Síntoma | Causa y solución |
 |---|---|
-| El flujo no se activa | La carpeta del desencadenador está mal escrita o la condición no coincide con el nombre del archivo. |
-| `Crear borrador` da 400 | El JSON está incompleto: abre el lote en `ERRORES` y avísale a Claude. |
-| `Crear borrador` da 403 | La conexión de Office 365 Outlook no es la de tu cuenta (`joseph.flores@…`). Corrígela en Conexiones. |
-| El borrador no tiene tu firma | Es normal: los borradores creados por Graph no llevan firma. Insértala desde Outlook (Insertar → Firma) antes de enviar. |
-| El correo llega sin colores | No debería pasar con Graph. Si pasa, revisa que el paso 2.3 use `outputs('Lote')?['mensaje']` sin modificarlo. |
+| El flujo no se activa | La carpeta del desencadenador está mal elegida, o el nombre del archivo no empieza con `LOTE_REPORTE_`. |
+| `Crear borrador` da error 400 | El JSON está incompleto. Abre el lote que quedó en `ERRORES` y avísale a Claude. |
+| `Crear borrador` da error 403 | La conexión de Office 365 Outlook no es la de tu cuenta. Corrígela en **Conexiones**. |
+| `Crear archivo` falla | Ya existe un Excel con ese nombre en `REPORTES`. Bórralo o cambia la acción por **Actualizar archivo**. |
+| El borrador no tiene tu firma | Es normal: los borradores creados por Graph no llevan firma. Insértala desde Outlook (**Insertar → Firma**) antes de enviar. |

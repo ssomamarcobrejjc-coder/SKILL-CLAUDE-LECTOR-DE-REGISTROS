@@ -7,12 +7,13 @@ description: "Arma el reporte diario de actividades de Joseph (tabla en Excel) y
 
 Se usa cuando Joseph dicta sus actividades del día y pide su reporte diario o el correo del reporte.
 
-## Ubicación (OneDrive de One Marcobre, conector Microsoft 365)
-- driveId: `b!zBaSpFjYjEm1glOVzE7cDegcK7fx8QREnWLmfaeq4zrrjNqSKNCcR6pZo3E1xYP_`
-- `REPORTE DIARIO`: `01A2SIUE67PLNFPKTMUJHZS5ZAJBHYNARS`
-- `ENTRADA`: `01A2SIUE6POLGXH5M5XVGLN2733NJPOSBX`
-- `CONFIG`: `01A2SIUE7DQVZ4Q4DKOZFK5JC6G5O6U4PQ` (contiene `destinatarios.json` y `generar_reporte.py`)
-- Ruta: `SSOMA\01. Capacitaciones\1. AUTOMATIZACIONES\REPORTE DIARIO`
+## Ubicación (OneDrive personal de Joseph, conector Microsoft 365)
+- PC: `C:\Users\joseph.flores\OneDrive - JJC\Escritorio\REPOS\REPORTE DIARIO`
+- driveId: `b!kFzZASJFPkuhhJmcVcW095ffmQGkWZFGnMo8_C1bHNcpm_KSRCerTK8qokziB5YV`
+- `REPORTE DIARIO`: `01XZZ665YKF6G6BM4O3BH2IMOZFHYKQFFR`
+- `ENTRADA`: `01XZZ6657J6UJG4CSJWBBY4XHB7CI4FA46`
+- `CONFIG`: `01XZZ6654ISDLFDTDF4VA2HEU7T5KYXV2N` (contiene `destinatarios.json` y `GUIA_FLUJO.md`)
+- `REPORTES` (Excel archivados por el flujo): `01XZZ6652EJCW25VFMJBEYVEEGBE34HOLK`
 
 ## Pasos
 1. Convierte lo que dicta Joseph en `actividades.json`:
@@ -20,7 +21,7 @@ Se usa cuando Joseph dicta sus actividades del día y pide su reporte diario o e
    - Por cada actividad: `actividad`, `detalle`, `avance` (de 0 a 1, o `null` si no da %), `pendientes`.
    - Si dice "pendiente" sin dar %, usa `avance: 0`. Si da una fecha en lugar de %, usa `null` y pon la fecha en `detalle`.
 2. Lee `CONFIG/destinatarios.json` con `read_resource`. Si Joseph cambia los destinatarios, actualiza ese archivo (`sharepoint_upload_file` con `conflictBehavior: replace`).
-3. Ejecuta `python3 generar_reporte.py actividades.json destinatarios.json salida/`. El script está en `scripts/` de este repositorio y en `CONFIG`.
+3. Ejecuta `python3 generar_reporte.py actividades.json destinatarios.json salida/`. El script está en `reporte-diario/scripts/` de este repositorio.
 4. **Muestra la previsualización:** la tabla en el chat, con Para, CC y asunto. Espera el visto bueno de Joseph.
 5. Con su visto bueno, sube `LOTE_REPORTE_AAAAMMDD.json` a `ENTRADA`:
    - Si la PC está conectada, usa `device_commit_files` (sube el archivo tal cual, sin copiar su contenido).
@@ -35,5 +36,5 @@ Se usa cuando Joseph dicta sus actividades del día y pide su reporte diario o e
 
 ## Reglas
 - Nunca envíes el correo: solo se crea el borrador.
-- No subas nada fuera de `REPORTE DIARIO\ENTRADA` y `CONFIG`.
+- No subas nada fuera de `REPORTE DIARIO\ENTRADA` y `REPORTE DIARIO\CONFIG`.
 - Si el lote aparece en `ERRORES`, revisa el JSON y vuelve a subirlo corregido.
