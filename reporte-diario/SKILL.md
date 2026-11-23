@@ -10,7 +10,7 @@ Se usa cuando Joseph dicta sus actividades del día y pide su reporte diario o e
 ## Ubicación (OneDrive personal de Joseph, conector Microsoft 365)
 - PC: `C:\Users\joseph.flores\OneDrive - JJC\Escritorio\REPOS\REPORTE DIARIO`
 - driveId: `b!kFzZASJFPkuhhJmcVcW095ffmQGkWZFGnMo8_C1bHNcpm_KSRCerTK8qokziB5YV`
-- `REPORTE DIARIO`: `01XZZ665YKF6G6BM4O3BH2IMOZFHYKQFFR`
+- `REPORTE DIARIO`: `01XZZ6653YVR3QGBNDZ5D3MP3XNJ6ZKEBZ`
 - `ENTRADA`: `01XZZ6657J6UJG4CSJWBBY4XHB7CI4FA46`
 - `CONFIG`: `01XZZ6654ISDLFDTDF4VA2HEU7T5KYXV2N` (contiene `destinatarios.json` y `GUIA_FLUJO.md`)
 - `REPORTES` (Excel archivados por el flujo): `01XZZ6652EJCW25VFMJBEYVEEGBE34HOLK`
