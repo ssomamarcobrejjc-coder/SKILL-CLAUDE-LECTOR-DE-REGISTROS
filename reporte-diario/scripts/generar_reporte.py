@@ -14,7 +14,8 @@ actividades.json:
 }
 "avance" va de 0 a 1 (0.9 = 90 %). Usa null si no hay porcentaje.
 Opcional: "tiempo_perdido": [{"actividad", "solicitado_por", "detalle"}] agrega el
-apartado INDICADOR DE TIEMPO PERDIDO debajo de la tabla.
+apartado INDICADOR DE TIEMPO PERDIDO debajo de la tabla. "tiempo_perdido_titulo" y
+"tiempo_perdido_col3" cambian el título del apartado y el encabezado de la 3.ª columna.
 
 destinatarios.json: ver destinatarios.ejemplo.json.
 """
@@ -43,7 +44,7 @@ def fecha_txt(f):
     return f.strftime("%d/%m/%Y")
 
 
-def crear_excel(fecha, acts, ruta, tiempo_perdido=None):
+def crear_excel(fecha, acts, ruta, tiempo_perdido=None, tp_titulo="INDICADOR DE TIEMPO PERDIDO", tp_col3="Solicitado por"):
     wb = Workbook(); ws = wb.active; ws.title = f"Reporte {fecha.strftime('%d-%m-%Y')}"
     thin = Side(style="thin", color="808080"); B = Border(left=thin, right=thin, top=thin, bottom=thin)
     ws.merge_cells("A1:F1"); ws["A1"] = "REPORTE DIARIO DE ACTIVIDADES"
@@ -89,11 +90,11 @@ def crear_excel(fecha, acts, ruta, tiempo_perdido=None):
         ws.column_dimensions[col].width = w
     if tiempo_perdido:
         r = t + 2
-        ws.merge_cells(f"A{r}:F{r}"); c = ws[f"A{r}"]; c.value = "INDICADOR DE TIEMPO PERDIDO"
+        ws.merge_cells(f"A{r}:F{r}"); c = ws[f"A{r}"]; c.value = tp_titulo
         c.font = Font(name=F, size=12, bold=True, color="FFFFFF"); c.fill = PatternFill("solid", fgColor=AZUL)
         c.alignment = Alignment(horizontal="center", vertical="center"); ws.row_dimensions[r].height = 22
         r += 1
-        for col, h in zip("ABCD", ["N°", "Actividad", "Solicitado por", "Detalle / Motivo"]):
+        for col, h in zip("ABCD", ["N°", "Actividad", tp_col3, "Detalle / Motivo"]):
             c = ws[f"{col}{r}"]; c.value = h
         ws.merge_cells(f"D{r}:F{r}")
         for i in range(1, 7):
@@ -116,7 +117,7 @@ def crear_excel(fecha, acts, ruta, tiempo_perdido=None):
     wb.save(ruta)
 
 
-def crear_html(fecha, acts, cfg, tiempo_perdido=None):
+def crear_html(fecha, acts, cfg, tiempo_perdido=None, tp_titulo="INDICADOR DE TIEMPO PERDIDO", tp_col3="Solicitado por"):
     """Replica el modelo del correo enviado el 22/11/2026 (tabla pegada desde Excel)."""
     e = lambda x: html.escape(str(x if x is not None else ""))
     W = ["54.0pt", "288.9pt", "234.25pt", "82.7pt", "96.7pt", "319.9pt"]
@@ -160,8 +161,9 @@ def crear_html(fecha, acts, cfg, tiempo_perdido=None):
         filas.append(f'<tr style="height:{h}">' + "".join(celda(i, t, al, h=h) for i, (t, al) in enumerate(vals)) + "</tr>")
     prom = f"{round(sum(con_av) / len(con_av) * 100)}%" if con_av else "—"
     cnt = {k: sum(estado(a.get("avance")) == k for a in acts) for k in ("Pendiente", "En proceso", "Completado")}
-    etq = {"Pendiente": "pendientes", "En proceso": "en proceso", "Completado": "completadas"}
-    partes = [f"{cnt[k]} {v}" for k, v in etq.items() if cnt[k]]
+    etq = {"Pendiente": ("pendiente", "pendientes"), "En proceso": ("en proceso", "en proceso"),
+           "Completado": ("completada", "completadas")}
+    partes = [f"{cnt[k]} {v[cnt[k] != 1]}" for k, v in etq.items() if cnt[k]]
     filas.append('<tr style="height:20.6pt">'
                  + celda(0, "AVANCE PROMEDIO", "right", True, "#DDEBF7", span=3, w="577.2pt")
                  + celda(3, prom, "center", True, "#DDEBF7")
@@ -172,10 +174,10 @@ def crear_html(fecha, acts, cfg, tiempo_perdido=None):
     if tiempo_perdido:
         tw = ["54.0pt", "288.9pt", "234.25pt", "499.3pt"]
         tf = [f'<tr style="height:24pt"><td colspan="4" style="width:1076.6pt;background:#1F4E78;{pad};height:24pt">'
-              f'<p class="MsoNormal" style="text-align:center"><b><span style="color:white;font-size:12pt">INDICADOR DE TIEMPO PERDIDO</span></b></p></td></tr>']
+              f'<p class="MsoNormal" style="text-align:center"><b><span style="color:white;font-size:12pt">{e(tp_titulo)}</span></b></p></td></tr>']
         tf.append('<tr style="height:30pt">' + "".join(
             celda(min(i, 5), h, "center", True, "#2E75B6", "30pt", first_row=True, w=tw[i], span=1)
-            for i, h in enumerate(["N°", "Actividad", "Solicitado por", "Detalle / Motivo"])) + "</tr>")
+            for i, h in enumerate(["N°", "Actividad", e(tp_col3), "Detalle / Motivo"])) + "</tr>")
         for n, x in enumerate(tiempo_perdido, 1):
             v = [(str(n), "center"), (e(x["actividad"]), ""), (e(x.get("solicitado_por")), ""), (e(x.get("detalle")), "")]
             tf.append('<tr style="height:37.75pt">' + "".join(
@@ -193,8 +195,9 @@ def main():
     data = json.loads(acts_p.read_text(encoding="utf-8"))
     cfg = json.loads(dest_p.read_text(encoding="utf-8"))
     fecha = date.fromisoformat(data["fecha"]); acts = data["actividades"]
+    tp = (data.get("tiempo_perdido_titulo", "INDICADOR DE TIEMPO PERDIDO"), data.get("tiempo_perdido_col3", "Solicitado por"))
     xlsx = out / f"Reporte_Diario_{fecha.isoformat()}.xlsx"
-    crear_excel(fecha, acts, xlsx, data.get("tiempo_perdido"))
+    crear_excel(fecha, acts, xlsx, data.get("tiempo_perdido"), *tp)
     asunto = cfg.get("asunto", "Reporte diario de actividades – {fecha}").format(fecha=fecha_txt(fecha))
     rec = lambda lst: [{"emailAddress": {"address": x["correo"], "name": x.get("nombre", "")}} for x in lst]
     lote = {
@@ -204,7 +207,7 @@ def main():
         "mensaje": {
             "subject": asunto,
             "importance": "normal",
-            "body": {"contentType": "HTML", "content": crear_html(fecha, acts, cfg, data.get("tiempo_perdido"))},
+            "body": {"contentType": "HTML", "content": crear_html(fecha, acts, cfg, data.get("tiempo_perdido"), *tp)},
             "toRecipients": rec(cfg["para"]),
             "ccRecipients": rec(cfg.get("cc", [])),
             "attachments": [{
